@@ -1,0 +1,234 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy import stats
+
+X = np.array([0.5, 2.3, 2.9])
+y = np.array([1.4, 1.9, 3.2])
+
+print("Dataset")
+print("X =", X)
+print("y =", y)
+
+
+def ols_linear_regression(X, y):
+    x_mean = np.mean(X)
+    y_mean = np.mean(y)
+
+    numerator = np.sum((X - x_mean) * (y - y_mean))
+    denominator = np.sum((X - x_mean) ** 2)
+
+    m = numerator / denominator
+    c = y_mean - m * x_mean
+
+    return m, c
+
+
+m_ols, c_ols = ols_linear_regression(X, y)
+y_pred_ols = m_ols * X + c_ols
+
+print("\nOLS RESULTS")
+print(f"m = {m_ols:.6f}")
+print(f"c = {c_ols:.6f}")
+print(f"Equation: y = {m_ols:.6f}x + {c_ols:.6f}")
+
+
+def gradient_descent(X, y, alpha=0.05, epochs=1000):
+    m = 0.0
+    c = 0.0
+    n = len(X)
+    loss_history = []
+
+    for epoch in range(epochs):
+        y_pred = m * X + c
+
+        loss = np.mean((y_pred - y) ** 2)
+        loss_history.append(loss)
+
+        dm = (2 / n) * np.sum((y_pred - y) * X)
+        dc = (2 / n) * np.sum(y_pred - y)
+
+        m = m - alpha * dm
+        c = c - alpha * dc
+
+    return m, c, loss_history
+
+
+alpha = 0.05
+epochs = 1500
+
+m_gd, c_gd, loss_history = gradient_descent(
+    X, y, alpha=alpha, epochs=epochs
+)
+
+y_pred_gd = m_gd * X + c_gd
+
+print("\nGRADIENT DESCENT RESULTS")
+print(f"m = {m_gd:.6f}")
+print(f"c = {c_gd:.6f}")
+print(f"Equation: y = {m_gd:.6f}x + {c_gd:.6f}")
+
+
+def compute_evaluation_metrics(X, y, y_pred, m):
+    n = len(X)
+    df = n - 2
+
+    ss_res = np.sum((y - y_pred) ** 2)
+    ss_tot = np.sum((y - np.mean(y)) ** 2)
+
+    r2 = 1 - (ss_res / ss_tot)
+
+    residual_variance = ss_res / df
+
+    se_m = np.sqrt(
+        residual_variance /
+        np.sum((X - np.mean(X)) ** 2)
+    )
+
+    t_stat = m / se_m
+    p_val = 2 * stats.t.sf(np.abs(t_stat), df=df)
+
+    return r2, se_m, t_stat, p_val
+
+
+r2_ols, se_ols, t_ols, p_ols = compute_evaluation_metrics(
+    X, y, y_pred_ols, m_ols
+)
+
+r2_gd, se_gd, t_gd, p_gd = compute_evaluation_metrics(
+    X, y, y_pred_gd, m_gd
+)
+
+print("\nOLS EVALUATION")
+print(f"R² = {r2_ols:.6f}")
+print(f"Standard Error = {se_ols:.6f}")
+print(f"t-statistic = {t_ols:.6f}")
+print(f"p-value = {p_ols:.6f}")
+
+print("\nGRADIENT DESCENT EVALUATION")
+print(f"R² = {r2_gd:.6f}")
+print(f"Standard Error = {se_gd:.6f}")
+print(f"t-statistic = {t_gd:.6f}")
+print(f"p-value = {p_gd:.6f}")
+
+
+print("\nOLS VS GRADIENT DESCENT")
+print(f"{'Metric':<20}{'OLS':>15}{'Gradient Descent':>20}")
+print("-" * 55)
+print(f"{'Slope (m)':<20}{m_ols:>15.6f}{m_gd:>20.6f}")
+print(f"{'Intercept (c)':<20}{c_ols:>15.6f}{c_gd:>20.6f}")
+print(f"{'R²':<20}{r2_ols:>15.6f}{r2_gd:>20.6f}")
+print(f"{'Standard Error':<20}{se_ols:>15.6f}{se_gd:>20.6f}")
+print(f"{'t-statistic':<20}{t_ols:>15.6f}{t_gd:>20.6f}")
+print(f"{'p-value':<20}{p_ols:>15.6f}{p_gd:>20.6f}")
+
+
+x_vals = np.linspace(0, 3.5, 100)
+
+ols_line = m_ols * x_vals + c_ols
+gd_line = m_gd * x_vals + c_gd
+
+fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+axes[0].scatter(
+    X, y,
+    color="black",
+    s=80,
+    label="Actual Data"
+)
+
+axes[0].plot(
+    x_vals,
+    ols_line,
+    color="blue",
+    linewidth=2,
+    label="OLS"
+)
+
+axes[0].plot(
+    x_vals,
+    gd_line,
+    color="red",
+    linestyle="--",
+    linewidth=2,
+    label="Gradient Descent"
+)
+
+axes[0].set_title("OLS vs Gradient Descent Regression Line")
+axes[0].set_xlabel("Height (X)")
+axes[0].set_ylabel("Weight (y)")
+axes[0].legend()
+axes[0].grid(True)
+
+axes[1].plot(
+    range(1, epochs + 1),
+    loss_history,
+    color="green",
+    linewidth=2
+)
+
+axes[1].set_title("MSE Loss Convergence over Epochs")
+axes[1].set_xlabel("Epoch")
+axes[1].set_ylabel("Mean Squared Error (Loss)")
+axes[1].grid(True)
+
+plt.tight_layout()
+plt.show()
+
+
+m_lr1, c_lr1, loss_lr1 = gradient_descent(
+    X, y, alpha=1.0, epochs=100
+)
+
+m_lr_small, c_lr_small, loss_lr_small = gradient_descent(
+    X, y, alpha=0.0001, epochs=1500
+)
+
+print("\nLEARNING RATE = 1.0")
+print(f"m = {m_lr1}")
+print(f"c = {c_lr1}")
+print(f"Final Loss = {loss_lr1[-1]}")
+
+print("\nLEARNING RATE = 0.0001")
+print(f"m = {m_lr_small:.6f}")
+print(f"c = {c_lr_small:.6f}")
+print(f"Final Loss = {loss_lr_small[-1]:.6f}")
+
+
+plt.figure(figsize=(10, 6))
+
+plt.plot(
+    loss_lr1,
+    color="red",
+    label="α = 1.0"
+)
+
+plt.plot(
+    loss_history,
+    color="blue",
+    label="α = 0.05"
+)
+
+plt.plot(
+    loss_lr_small,
+    color="green",
+    label="α = 0.0001"
+)
+
+plt.xlabel("Epoch")
+plt.ylabel("Mean Squared Error")
+plt.title("Effect of Learning Rate on Convergence")
+plt.legend()
+plt.grid(True)
+plt.show()
+
+
+print("\nFINAL VERIFICATION")
+print(f"OLS: y = {m_ols:.4f}x + {c_ols:.4f}")
+print(f"GD:  y = {m_gd:.4f}x + {c_gd:.4f}")
+print(f"Slope Difference = {abs(m_ols - m_gd):.8f}")
+print(f"Intercept Difference = {abs(c_ols - c_gd):.8f}")
+
+if np.isclose(m_ols, m_gd, atol=1e-3) and np.isclose(c_ols, c_gd, atol=1e-3):
+    print("Gradient Descent converged close to the OLS solution.")
+else:
+    print("Gradient Descent has not completely converged.")

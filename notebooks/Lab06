@@ -1,0 +1,299 @@
+from pathlib import Path
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import seaborn as sns
+
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.feature_selection import VarianceThreshold, mutual_info_classif
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, classification_report, roc_auc_score
+from sklearn.model_selection import train_test_split
+
+possible_paths = [
+    Path("data/processed/olist_orders_abt.csv"),
+    Path("../data/processed/olist_orders_abt.csv"),
+]
+input_path = next((p for p in possible_paths if p.exists()), None)
+if input_path is None:
+    raise FileNotFoundError("Could not find olist_orders_abt.csv")
+
+df = pd.read_csv(input_path)
+print("Shape:", df.shape)
+display(df.head())
+
+target = "is_late_delivery"
+identifier_columns = ["order_id", "customer_id", "customer_unique_id"]
+leakage_columns = [
+    "delivery_days",
+    "delivery_delay_days",
+    "review_score",
+    "review_comment_count",
+    "has_review_comment",
+    "is_low_review",
+]
+
+columns_to_drop = [
+    c for c in identifier_columns + leakage_columns if c in df.columns
+]
+feature_df = df.drop(columns=columns_to_drop)
+
+if {"total_price", "total_items"}.issubset(df.columns):
+    df["average_item_price"] = df["total_price"] / df["total_items"].replace(
+        0, np.nan
+    )
+
+if {"total_freight", "total_price"}.issubset(df.columns):
+    df["freight_ratio"] = df["total_freight"] / df["total_price"].replace(
+        0, np.nan
+    )
+
+if {"total_items", "unique_sellers"}.issubset(df.columns):
+    df["items_per_seller"] = df["total_items"] / df["unique_sellers"].replace(
+        0, np.nan
+    )
+
+if {"unique_sellers", "total_items"}.issubset(df.columns):
+    df["seller_diversity"] = df["unique_sellers"] / df["total_items"].replace(
+        0, np.nan
+    )
+
+if "order_day_of_week" in df.columns:
+    df["is_weekend"] = (df["order_day_of_week"] >= 5).astype(int)
+
+if "order_hour" in df.columns:
+    df["is_business_hour"] = (df["order_hour"].between(9, 18)).astype(int)
+
+if "order_month" in df.columns:
+    df["is_year_end"] = (df["order_month"].isin([11, 12])).astype(int)
+
+if "order_month" in df.columns:
+    df["month_sin"] = np.sin(2 * np.pi * df["order_month"] / 12)
+    df["month_cos"] = np.cos(2 * np.pi * df["order_month"] / 12)
+
+if "order_hour" in df.columns:
+    df["hour_sin"] = np.sin(2 * np.pi * df["order_hour"] / 24)
+    df["hour_cos"] = np.cos(2 * np.pi * df["order_hour"] / 24)
+
+if "total_price" in df.columns:
+    df["log_total_price"] = np.log1p(df["total_price"].clip(lower=0))
+
+if "total_freight" in df.columns:
+    df["log_total_freight"] = np.log1p(df["total_freight"].clip(lower=0))
+
+if "total_price" in df.columns:
+    df["price_band"] = pd.cut(
+        df["total_price"],
+        bins=[-np.inf, 100, 500, 1000, 5000, np.inf],
+        labels=["very_low", "low", "medium", "high", "very_high"],
+    )
+
+if {"total_items", "total_price"}.issubset(df.columns):
+    df["items_x_price"] = df["total_items"] * df["total_price"]
+
+engineered_columns = [
+    "average_item_price",
+    "freight_ratio",
+    "items_per_seller",
+    "seller_diversity",
+]
+available_engineered = [c for c in engineered_columns if c in df.columns]
+
+print(df[available_engineered].isna().sum())
+display(df[available_engineered].describe().T)
+
+new_columns = [
+    "average_item_price",
+    "freight_ratio",
+    "items_per_seller",
+    "seller_diversity",
+    "is_weekend",
+    "is_business_hour",
+    "is_year_end",
+    "month_sin",
+    "month_cos",
+    "hour_sin",
+    "hour_cos",
+    "log_total_price",
+    "log_total_freight",
+    "price_band",
+    "items_x_price",
+]
+new_columns = [c for c in new_columns if c in df.columns]
+display(df[new_columns].head())
+
+all_leakage_and_ids = identifier_columns + leakage_columns + [target]
+numeric_df = (
+    df.select_dtypes(include=[np.number])
+    .drop(columns=[c for c in all_leakage_and_ids if c in df.columns])
+    .copy()
+)
+
+selector = VarianceThreshold(threshold=0.0)
+selector.fit(numeric_df.fillna(numeric_df.median()))
+
+selected_numeric = numeric_df.columns[selector.get_support()]
+print("Original:", len(numeric_df.columns))
+print("After variance filtering:", len(selected_numeric))
+
+corr = numeric_df.corr(numeric_only=True)
+threshold = 0.90
+upper = corr.where(np.triu(np.ones(corr.shape), k=1).astype(bool))
+
+high_corr_pairs = []
+for col in upper.columns:
+    for row in upper.index:
+        value = upper.loc[row, col]
+        if pd.notna(value) and abs(value) > threshold:
+            high_corr_pairs.append((row, col, value))
+
+print("High correlation pairs count:", len(high_corr_pairs))
+for r, c, v in high_corr_pairs[:20]:
+    print(r, c, v)
+
+mi_df = (
+    df.select_dtypes(include=[np.number])
+    .drop(columns=[c for c in all_leakage_and_ids if c in df.columns])
+    .copy()
+)
+mi_df = mi_df.fillna(mi_df.median())
+
+mi_scores = mutual_info_classif(
+    mi_df, df[target], random_state=42, n_neighbors=3
+)
+mi_results = pd.DataFrame(
+    {"feature": mi_df.columns, "mutual_information": mi_scores}
+).sort_values("mutual_information", ascending=False)
+display(mi_results.head(15))
+
+X_rf = (
+    df.select_dtypes(include=[np.number])
+    .drop(columns=[c for c in all_leakage_and_ids if c in df.columns])
+    .copy()
+)
+X_rf = X_rf.fillna(X_rf.median())
+y_rf = df[target]
+
+rf = RandomForestClassifier(
+    n_estimators=100, random_state=42, n_jobs=-1, class_weight="balanced"
+)
+rf.fit(X_rf, y_rf)
+
+importance = pd.DataFrame(
+    {"feature": X_rf.columns, "importance": rf.feature_importances_}
+).sort_values("importance", ascending=False)
+display(importance.head(15))
+
+candidate_features = [
+    "total_price",
+    "total_freight",
+    "total_items",
+    "unique_products",
+    "unique_sellers",
+    "order_month",
+    "order_day_of_week",
+    "order_hour",
+    "average_item_price",
+    "freight_ratio",
+    "items_per_seller",
+    "seller_diversity",
+    "is_weekend",
+    "is_business_hour",
+    "is_year_end",
+    "month_sin",
+    "month_cos",
+    "hour_sin",
+    "hour_cos",
+    "log_total_price",
+    "log_total_freight",
+    "items_x_price",
+]
+
+final_features = [c for c in candidate_features if c in df.columns]
+final_df = df[final_features + [target]].copy()
+
+print("Final shape:", final_df.shape)
+display(final_df.head())
+
+output_dir = input_path.parent
+output_path = output_dir / "olist_orders_feature_engineered.csv"
+final_df.to_csv(output_path, index=False)
+print("Saved to:", output_path)
+
+baseline_features = [
+    "total_price",
+    "total_freight",
+    "total_items",
+    "unique_products",
+    "unique_sellers",
+    "order_month",
+    "order_day_of_week",
+    "order_hour",
+]
+baseline_features = [c for c in baseline_features if c in final_df.columns]
+
+X_base = final_df[baseline_features].fillna(
+    final_df[baseline_features].median()
+)
+X_eng = final_df[final_features].fillna(final_df[final_features].median())
+y = final_df[target]
+
+X_base_train, X_base_test, y_train, y_test = train_test_split(
+    X_base, y, test_size=0.2, random_state=42, stratify=y
+)
+X_eng_train, X_eng_test, _, _ = train_test_split(
+    X_eng, y, test_size=0.2, random_state=42, stratify=y
+)
+
+clf_base = LogisticRegression(
+    max_iter=1000, class_weight="balanced", random_state=42
+)
+clf_base.fit(X_base_train, y_train)
+y_pred_base = clf_base.predict(X_base_test)
+y_prob_base = clf_base.predict_proba(X_base_test)[:, 1]
+
+acc_base = accuracy_score(y_test, y_pred_base)
+roc_base = roc_auc_score(y_test, y_prob_base)
+
+clf_eng = LogisticRegression(
+    max_iter=1000, class_weight="balanced", random_state=42
+)
+clf_eng.fit(X_eng_train, y_train)
+y_pred_eng = clf_eng.predict(X_eng_test)
+y_prob_eng = clf_eng.predict_proba(X_eng_test)[:, 1]
+
+acc_eng = accuracy_score(y_test, y_pred_eng)
+roc_eng = roc_auc_score(y_test, y_prob_eng)
+
+print(f"Baseline: Accuracy = {acc_base:.4f}, ROC-AUC = {roc_base:.4f}")
+print(f"Engineered: Accuracy = {acc_eng:.4f}, ROC-AUC = {roc_eng:.4f}")
+
+report_data = {
+    "Item": [
+        "Original number of features",
+        "Number of engineered features",
+        "Most useful engineered feature",
+        "Why was it created?",
+        "Features removed during selection",
+        "Why were they removed?",
+        "Leakage risks found",
+        "Baseline model result",
+        "Engineered model result",
+        "Final conclusion",
+    ],
+    "Student Response": [
+        str(df.shape[1] - 1),
+        str(len(new_columns)),
+        str(importance.iloc[0]["feature"]),
+        "Captures non-linear order complexity and cost density before fulfillment.",
+        "Identifiers and leakage columns.",
+        "Identifiers lack predictive signals; leakage columns reveal the target.",
+        "delivery_delay_days, review_score, and post-delivery indicators.",
+        f"Acc: {acc_base:.4f}, ROC-AUC: {roc_base:.4f}",
+        f"Acc: {acc_eng:.4f}, ROC-AUC: {roc_eng:.4f}",
+        "Engineered representations provide stronger learning signals.",
+    ],
+}
+
+report_df = pd.DataFrame(report_data)
+display(report_df)
